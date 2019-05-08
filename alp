@@ -1,0 +1,206 @@
+#!/bin/sh
+
+set -e
+
+ARCH=${ARCH:-x86_64}
+APK_MIRROR=${APK_MIRROR:-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main}
+APK_TOOLS_VER=${APK_TOOLS_VER:-2.10.3-r1}
+
+# alp [-C root] cmd
+#
+# alp init [alpine-base]
+# alp exec [cmd [args]]
+# alp pack
+# alp boot
+
+# alp -C romfs init alpine-base linux-virt
+
+# alp -C staging init alpine-sdk linux-virt-dev
+# alp -C staging bind romfs /romfs
+# alp -C staging bind ubr /build/ubr
+# alp -C staging exec -w /build/ubr ./configure
+# alp -C staging exec -w /build/ubr make
+# alp -C staging exec -w /build/ubr make DESTDIR=/romfs install
+
+# alp -C romfs pack
+# alp -C romfs boot
+
+usage()
+{
+    cat <<EOF
+usage: alp [-C root] <command> [<args>]
+
+Create and manage Alpine Linux roots, alps.
+
+  alp init [package(s)]
+
+    Create a new alp and install the specified packages. If no
+    packages are specified, alpine-base is installed.
+
+    The following host paths are made available to the alp. To change
+    these, modify <root>/.alp/bindings.
+      - /etc/resolv.conf
+      - /proc
+      - /sys
+      
+
+  alp exec [<proot-options>] [<program> [<args>]]
+
+    Execute program in alp. Accepts any options recognized by
+    proot(1), e.g. -0 to emulate the superuser. If no program is
+    specified, /bin/sh is launched.
+
+
+  alp pack
+
+    Package up an alp as a Squash filesystem which can be used to boot
+    a virtual instance under QEMU (see alp boot).
+
+
+  alp boot
+
+    Run packaged alp as a virtual machine under QEMU.
+
+
+  alp help
+
+    Show this message.
+
+EOF
+}
+
+alp_conf=${XDG_CONFIG_HOME:-~/.config}/alp
+mkdir -p ${alp_conf}
+
+alp_root_set() {
+    alp_root=${1}
+    alp_work=${alp_root}/.alp
+}
+
+alp_assert() {
+    [ -d ${alp_work} ] && return 0
+
+    echo "${alp_root} is not an alp root."
+    exit 1
+}
+
+
+##
+# alp pack
+
+alp_pack()
+{
+    local file=${alp_work}/rootfs.squashfs
+
+    while getopts "f:" opt; do
+	case ${opt} in
+	    f)
+		file=$OPTARG
+		;;
+	esac
+    done
+    shift $((OPTIND - 1))
+
+    mksquashfs ${alp_root} ${file} -all-root -ef ${alp_work}/exclude
+}
+
+
+##
+# alp exec
+
+alp_exec()
+{
+    proot -r ${alp_root} -w / $(cat ${alp_work}/bindings | sed -e 's/^/-b /g') \
+	  $@
+}
+
+
+##
+# alp init
+
+alp_init_bindings()
+{
+    cat <<EOF >${alp_work}/bindings
+/proc
+/sys
+/etc/resolv.conf
+EOF
+}
+
+alp_init_exclude()
+{
+    cat <<EOF >${alp_work}/exclude
+.alp
+EOF
+}
+
+alp_init_apk()
+{
+    if [ -f ${alp_work}/apk.static ]; then
+	return 0
+    fi
+
+    if [ ! -f ${alp_conf}/apk.static ]; then
+	wget -O - ${APK_MIRROR}/${ARCH}/apk-tools-static-${APK_TOOLS_VER}.apk | \
+	    tar xOz sbin/apk.static >${alp_conf}/apk.static
+
+	chmod +x ${alp_conf}/apk.static
+    fi
+
+    cp ${alp_conf}/apk.static ${alp_work}/apk.static
+}
+
+alp_init()
+{
+    local pkgs="${*:-alpine-base}"
+
+    mkdir -p ${alp_work}
+    alp_init_apk
+    alp_init_bindings
+    alp_init_exclude
+
+    mkdir -p ${alp_root}/etc/apk
+    echo ${APK_MIRROR} >${alp_root}/etc/apk/repositories
+    
+    alp_exec -0 /.alp/apk.static -U --allow-untrusted --initdb add ${pkgs}
+}
+
+
+alp_root_set .
+
+# Global options
+while getopts "C:" opt; do
+    case ${opt} in
+	C)
+	    alp_root_set $OPTARG
+	    ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+if [ $# -lt 1 ]; then
+    usage && exit 1
+fi
+
+cmd=${1}
+shift
+
+case ${cmd} in
+    "help")
+	usage && exit 0
+	;;
+    "init")
+	alp_init "$@"
+	;;
+    "exec")
+	alp_assert
+	alp_exec "$@"
+	;;
+    "pack")
+	alp_assert
+	alp_pack "$@"
+	;;
+
+    *)
+	usage && exit 1
+esac
