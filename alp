@@ -6,25 +6,6 @@ ARCH=${ARCH:-x86_64}
 APK_MIRROR=${APK_MIRROR:-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main}
 APK_TOOLS_VER=${APK_TOOLS_VER:-2.10.3-r1}
 
-# alp [-C root] cmd
-#
-# alp init [alpine-base]
-# alp exec [cmd [args]]
-# alp pack
-# alp boot
-
-# alp -C romfs init alpine-base linux-virt
-
-# alp -C staging init alpine-sdk linux-virt-dev
-# alp -C staging bind romfs /romfs
-# alp -C staging bind ubr /build/ubr
-# alp -C staging exec -w /build/ubr ./configure
-# alp -C staging exec -w /build/ubr make
-# alp -C staging exec -w /build/ubr make DESTDIR=/romfs install
-
-# alp -C romfs pack
-# alp -C romfs boot
-
 usage()
 {
     cat <<EOF
@@ -42,7 +23,7 @@ Create and manage Alpine Linux roots, alps.
       - /etc/resolv.conf
       - /proc
       - /sys
-      
+
 
   alp exec [<proot-options>] [<program> [<args>]]
 
@@ -69,8 +50,8 @@ Create and manage Alpine Linux roots, alps.
 EOF
 }
 
-alp_conf=${XDG_CONFIG_HOME:-~/.config}/alp
-mkdir -p ${alp_conf}
+##
+# utils
 
 alp_root_set() {
     alp_root=${1}
@@ -90,18 +71,8 @@ alp_assert() {
 
 alp_pack()
 {
-    local file=${alp_work}/rootfs.squashfs
-
-    while getopts "f:" opt; do
-	case ${opt} in
-	    f)
-		file=$OPTARG
-		;;
-	esac
-    done
-    shift $((OPTIND - 1))
-
-    mksquashfs ${alp_root} ${file} -all-root -ef ${alp_work}/exclude
+    mksquashfs ${alp_root} ${alp_work}/rootfs.squashfs \
+	       -all-root -ef ${alp_work}/exclude
 }
 
 
@@ -118,50 +89,55 @@ alp_exec()
 ##
 # alp init
 
-alp_init_bindings()
+alp_init_work()
 {
-    cat <<EOF >${alp_work}/bindings
+    mkdir -p ${alp_work}
+
+    if [ ! -f ${alp_work}/apk.static ]; then
+	wget -q -O - ${APK_MIRROR}/${ARCH}/apk-tools-static-${APK_TOOLS_VER}.apk | \
+	    tar xOz sbin/apk.static >${alp_work}/apk.static
+
+	chmod +x ${alp_work}/apk.static
+    fi
+
+    [ -f ${alp_work}/bindings ] || cat <<EOF >${alp_work}/bindings
 /proc
 /sys
 /etc/resolv.conf
 EOF
-}
 
-alp_init_exclude()
-{
-    cat <<EOF >${alp_work}/exclude
+    [ -f ${alp_work}/exclude ] || cat <<EOF >${alp_work}/exclude
 .alp
+boot
 EOF
-}
 
-alp_init_apk()
-{
-    if [ -f ${alp_work}/apk.static ]; then
-	return 0
-    fi
+    [ -f ${alp_work}/boot-prep.sh ] || cat <<EOF >${alp_work}/boot-prep.sh
+#!/bin/sh
 
-    if [ ! -f ${alp_conf}/apk.static ]; then
-	wget -O - ${APK_MIRROR}/${ARCH}/apk-tools-static-${APK_TOOLS_VER}.apk | \
-	    tar xOz sbin/apk.static >${alp_conf}/apk.static
+apk -U add linux-virt
 
-	chmod +x ${alp_conf}/apk.static
-    fi
+ln -s agetty /etc/init.d/agetty.ttyS0
 
-    cp ${alp_conf}/apk.static ${alp_work}/apk.static
+rc-update add devfs        sysinit
+rc-update add dmesg        sysinit
+rc-update add mdev         sysinit
+rc-update add agetty.ttyS0 default
+
+mkinitfs -F "base squashfs" -i /.alp/initramfs-init -o /.alp/initramfs $(ls /lib/modules/ | head -n 1)
+
+EOF
+
 }
 
 alp_init()
 {
     local pkgs="${*:-alpine-base}"
 
-    mkdir -p ${alp_work}
-    alp_init_apk
-    alp_init_bindings
-    alp_init_exclude
+    alp_init_work
 
     mkdir -p ${alp_root}/etc/apk
     echo ${APK_MIRROR} >${alp_root}/etc/apk/repositories
-    
+
     alp_exec -0 /.alp/apk.static -U --allow-untrusted --initdb add ${pkgs}
 }
 
