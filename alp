@@ -67,16 +67,6 @@ alp_assert() {
 
 
 ##
-# alp pack
-
-alp_pack()
-{
-    mksquashfs ${alp_root} ${alp_work}/rootfs.squashfs \
-	       -all-root -ef ${alp_work}/exclude
-}
-
-
-##
 # alp exec
 
 alp_exec()
@@ -85,6 +75,28 @@ alp_exec()
 	  $@
 }
 
+##
+# alp boot
+
+alp_boot()
+{
+    qemu-system-x86_64 -m 256M -M pc -nographic \
+       -kernel ${alp_root}/boot/vmlinuz-virt -append "console=ttyS0 quiet" \
+       -initrd ${alp_work}/initramfs \
+       -hda ${alp_work}/rootfs.squashfs
+}
+
+##
+# alp pack
+
+alp_pack()
+{
+    alp_exec -0 sh /.alp/boot-prep.sh
+
+    mksquashfs ${alp_root} ${alp_work}/rootfs.squashfs \
+       -all-root -noappend \
+       -ef ${alp_work}/exclude -pf ${alp_work}/pseudo
+}
 
 ##
 # alp init
@@ -111,20 +123,49 @@ EOF
 boot
 EOF
 
-    [ -f ${alp_work}/boot-prep.sh ] || cat <<EOF >${alp_work}/boot-prep.sh
+    [ -f ${alp_work}/pseudo ] || cat <<EOF >${alp_work}/pseudo
+proc d 444 root root
+sys  d 444 root root
+EOF
+
+    [ -f ${alp_work}/boot-prep.sh ] || cat <<'EOF' >${alp_work}/boot-prep.sh
 #!/bin/sh
 
-apk -U add linux-virt
+set -x
+
+apk -U add linux-virt util-linux
 
 ln -s agetty /etc/init.d/agetty.ttyS0
 
 rc-update add devfs        sysinit
 rc-update add dmesg        sysinit
 rc-update add mdev         sysinit
+rc-update add hwclock      boot
+rc-update add modules      boot
+rc-update add sysctl       boot
+rc-update add hostname     boot 
+rc-update add bootmisc     boot
+rc-update add syslog       boot 
 rc-update add agetty.ttyS0 default
 
-mkinitfs -F "base squashfs" -i /.alp/initramfs-init -o /.alp/initramfs $(ls /lib/modules/ | head -n 1)
+echo ttyS0 >/etc/securetty
 
+mkinitfs -F "base scsi squashfs" \
+    -i /.alp/initramfs-init \
+    -o /.alp/initramfs \
+    $(ls /lib/modules/ | head -n 1)
+
+EOF
+
+    [ -f ${alp_work}/initramfs-init ] || cat <<EOF >${alp_work}/initramfs-init
+#!/bin/sh
+busybox modprobe sd_mod
+busybox modprobe squashfs
+busybox mount -t devtmpfs devtmpfs /dev
+busybox mount -t squashfs /dev/sda /newroot
+busybox mount -t devtmpfs devtmpfs /newroot/dev
+busybox mount -t tmpfs    tmpfs    /newroot/tmp
+exec busybox switch_root /newroot /sbin/init
 EOF
 
 }
@@ -168,13 +209,17 @@ case ${cmd} in
     "init")
 	alp_init "$@"
 	;;
-    "exec")
-	alp_assert
-	alp_exec "$@"
-	;;
     "pack")
 	alp_assert
 	alp_pack "$@"
+	;;
+    "boot")
+	alp_assert
+	alp_boot "$@"
+	;;
+    "exec")
+	alp_assert
+	alp_exec "$@"
 	;;
 
     *)
