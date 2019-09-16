@@ -4,7 +4,6 @@ set -e
 
 ARCH=${ARCH:-x86_64}
 APK_MIRROR=${APK_MIRROR:-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main}
-APK_TOOLS_VER=${APK_TOOLS_VER:-2.10.3-r1}
 
 usage()
 {
@@ -106,6 +105,14 @@ alp_init_work()
     mkdir -p ${alp_work}
 
     if [ ! -f ${alp_work}/apk.static ]; then
+	if [ -z "${APK_TOOLS_VER}" ]; then
+	    APK_TOOLS_VER=$(
+		wget -q -O - ${APK_MIRROR}/${ARCH}/APKINDEX.tar.gz |
+		    tar xz -O APKINDEX | awk -F: '
+			/P:apk-tools-static/ { found=1 }
+			/V/ { if (found) { print($2); exit(0); } }')
+	fi
+
 	wget -q -O - ${APK_MIRROR}/${ARCH}/apk-tools-static-${APK_TOOLS_VER}.apk | \
 	    tar xOz sbin/apk.static >${alp_work}/apk.static
 
